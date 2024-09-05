@@ -1,0 +1,3 @@
+---
+# vars file for terragrunt
+terragrunt_version: "v0.58.5"

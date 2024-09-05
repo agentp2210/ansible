@@ -1,0 +1,38 @@
+---
+- name: Configure SUDO with NOPASS
+  lineinfile:
+    state: present
+    path: /etc/sudoers
+    regexp: '^cloud_user ALL='
+    line: 'cloud_user ALL=(ALL:ALL) NOPASSWD: ALL'
+    validate: /usr/sbin/visudo -cf %s
+  tags:
+    - sudo
+
+- name: Update apt-get repo and cache
+  apt: update_cache=yes force_apt_get=yes cache_valid_time=3600
+
+- name: apt install required apps
+  ansible.builtin.apt:
+    name: "{{ item }}"
+    state: present
+  loop:
+    - python3-pip
+    - tree
+    - gpg
+    - gnupg
+    - unzip
+    - software-properties-common
+    - apt-transport-https
+    - ca-certificates
+    - curl
+    - lsb-release
+    - default-jre
+
+- name: Copy SSh Key | copying shh key to remote host
+  authorized_key:
+    user: "cloud_user"
+    state: present
+    key: "{{ lookup('file', item) }}"
+  with_fileglob:
+  - id_dsa.pub

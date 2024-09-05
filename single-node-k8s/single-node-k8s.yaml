@@ -1,0 +1,302 @@
+# This pipeline creates single-node k8s cluster
+# we need at least 2 cores and 2 GB RAM
+---
+- name: Configure VM for k8s cluster
+  hosts: node1
+  gather_facts : no
+  vars:
+    docker_key: https://download.docker.com/linux/ubuntu/gpg
+    docker_repo: 'deb [arch=amd64 signed-by=/etc/apt/keyrings/docker.asc] https://download.docker.com/linux/ubuntu'
+    k8s_key: https://pkgs.k8s.io/core:/stable:/v{{k8s_version}}/deb/Release.key
+    k8s_repo: 'deb [signed-by=/etc/apt/keyrings/kubernetes-apt-keyring.asc] https://pkgs.k8s.io/core:/stable:/v{{k8s_version}}/deb/'
+    my_user: "{{ansible_user}}"
+  tasks:
+    - name: Gathering Facts
+      become: true
+      gather_facts:
+
+    - name: Install software using package managers
+      become: true
+      block:
+        - name: Import Docker GPG signing key
+          become: true
+          get_url:
+            url: "{{ docker_key }}"
+            dest: /etc/apt/keyrings/docker.asc
+            mode: '0644'
+            force: true
+
+        - name: check ubuntu dist
+          debug: 
+            var: ansible_lsb.codename
+
+        - name: Add Docker repository
+          become: true
+          apt_repository:
+            repo: "{{ docker_repo }} {{ansible_lsb.codename}} stable "
+            state: present
+
+        - name: Add Google GPG apt Key
+          ansible.builtin.apt_key:
+            url: https://packages.cloud.google.com/apt/doc/apt-key.gpg
+            state: present
+
+        - name: Add K8s Repository
+          ansible.builtin.apt_repository:
+            repo: deb https://apt.kubernetes.io/ kubernetes-xenial main
+            state: present
+
+        - name: Install packages with apt
+          apt: 
+            pkg: 
+              - net-tools
+              - distro-info-data
+              - docker-ce
+              - docker-ce-cli
+              - containerd.io
+              - docker-compose-plugin
+              - python3-pip
+              - ca-certificates
+              - curl
+              - apt-transport-https
+              - apache2-utils
+              - ldap-utils
+              - jq
+              - zip
+              - nmap
+              - tree
+              - lvm2 
+              - software-properties-common
+              - kubelet
+              - kubeadm
+              - kubelet
+              - open-iscsi
+            state: present
+            update_cache: true
+
+        - name: Prevent kubelet/kubeadm/kubectl from being upgraded
+          
+          dpkg_selections:
+            name: "{{ item }}"
+            selection: hold
+          loop:
+            - kubelet
+            - kubeadm
+            - kubectl
+
+    - name: Ensure group "docker" exists
+      ansible.builtin.group:
+        name: docker
+        state: present
+
+    - name: Add the user 'cloud_user' to the group of 'docker'
+      ansible.builtin.user:
+        name: cloud_user
+        group: docker  
+
+    - name: Install binary files
+      block:
+
+        - name: Install k9s
+          shell: |
+            curl -sS https://webinstall.dev/k9s | bash
+            . /home/{{my_user}}/.config/envman/PATH.env
+          args:
+            creates: /home/{{my_user}}/.local/bin/k9s
+
+        - name: Install helm
+          shell: |
+            curl -fsSL -o get_helm.sh https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3
+            chmod 700 get_helm.sh
+            ./get_helm.sh
+          args:
+            creates: /usr/local/bin/helm
+          become: true
+
+    # - name: Process partition
+    #   tags: lvm
+    #   include_tasks: tasks/process_partition.yaml
+    #   when: 
+    #     - (blk_device | split ('/'))[2] in ansible_devices.keys()
+
+    - name: turn swap off
+      become: true
+      shell: swapoff -a
+
+    - name: disable swap permanently
+      become: true
+      replace:
+        path: /etc/fstab
+        regexp: '^(\s*)([^#\n]+\s+)(\w+\s+)swap(\s+.*)$'
+        replace: '#\1\2\3swap\4'
+        backup: yes
+
+    - name: Create containerd directory
+      become: yes
+      ansible.builtin.file: 
+        name: /etc/containerd
+        state: directory
+    
+    - name: Check if config.toml is updated
+      become: yes
+      ansible.builtin.lineinfile:
+        path: /etc/containerd/config.toml
+        regexp: '^#[grpc]'
+        state: absent
+      check_mode: yes
+      changed_when: false
+      register: containerd_config
+
+    - name: Render containerd default config
+      become: yes
+      ansible.builtin.shell: containerd config default > /etc/containerd/config.toml
+      when: 
+        - containerd_config.found
+
+    - name: enable SystemdCgroup for containerd
+      become: yes
+      ansible.builtin.replace:
+        path: /etc/containerd/config.toml
+        regexp: '^(\s*)SystemdCgroup(.*)$'
+        replace: '\1SystemdCgroup = true'
+
+    - name: restart containerd
+      become: yes
+      systemd:
+        name: containerd
+        state: restarted
+        enabled: yes
+
+    - name: Populate service facts
+      service_facts:
+
+    - name: init cluster
+      become: true
+      shell: |
+        kubeadm init --pod-network-cidr=10.244.0.0/18
+      ignore_errors: yes
+      when: ansible_facts.services['kubelet.service'].state != 'running'
+
+    - name: configure cluster
+      become: false
+      block:     
+        - name: create .kube folder
+          ansible.builtin.file: 
+            path: /home/{{ansible_user}}/.kube
+            state: directory
+
+        - name: Populate .kube/config file
+          become: yes
+          ansible.builtin.copy: 
+            src: /etc/kubernetes/admin.conf
+            dest: /home/{{ansible_user}}/.kube/config
+            remote_src: yes
+            owner: "{{ansible_user}}"
+            group: "{{ansible_user}}"
+            mode: '0700'
+
+        - name: kubectl autocompletion
+          shell: |
+            kubectl completion bash > /home/{{ansible_user}}/.kube/completion.bash.inc
+
+        - name: alter profile
+          ansible.builtin.lineinfile:
+            dest: $HOME/.profile
+            state: present
+            line: source "$HOME/.kube/completion.bash.inc"
+
+        - name: Register a variable
+          ansible.builtin.shell: kubectl get node  -o jsonpath='{.items[*].spec.taints}'
+          register: have_taints
+
+        - name: untaint node
+          shell: |
+            kubectl taint nodes --all node-role.kubernetes.io/master-
+            kubectl taint nodes --all node-role.kubernetes.io/control-plane-
+            kubectl label node --all node.kubernetes.io/exclude-from-external-load-balancers-
+          when: have_taints.stdout
+
+        - name: install cni 
+          shell: |
+            kubectl apply -f https://raw.githubusercontent.com/coreos/flannel/master/Documentation/kube-flannel.yml
+
+        - name: Add stable nginx chart repo
+          kubernetes.core.helm_repository:
+            name: stable
+            repo_url: "https://kubernetes.github.io/ingress-nginx"
+          tags:
+            - nginx
+
+        - name: Deploy latest version of ingress-nginx
+          kubernetes.core.helm:
+            name: ingress-nginx
+            chart_ref: stable/ingress-nginx
+            release_namespace: ingress-nginx
+            create_namespace: true
+          tags:
+            - nginx
+
+        - name: install metallb
+          shell: |
+            helm upgrade --install metallb metallb \
+            --repo https://metallb.github.io/metallb \
+            --namespace metallb --create-namespace
+
+        - name: Create manifests folder
+          ansible.builtin.file: 
+            name: $HOME/manifests
+            state: directory
+
+        - name: copy manifests from template
+          ansible.builtin.template:
+            src: "{{ item }}"
+            dest: "$HOME/manifests/{{ item.split('.') | first | basename }}.yml"
+          with_fileglob:
+            - "templates/*.yml.j2"
+
+        - name: Wait for crds
+          ansible.builtin.pause:
+            minutes: 1
+
+        - name: apply manifests
+          shell: |
+            kubectl apply -f $HOME/manifests/
+
+        - name: Create value files folder
+          ansible.builtin.file: 
+            name: $HOME/values
+            state: directory
+
+        - name: copy value files from template
+          ansible.builtin.template:
+            src: "{{ item }}"
+            dest: "$HOME/values/{{ item.split('.') | first | basename }}.yaml"
+          with_fileglob:
+            - "templates/*.yaml.j2" 
+
+        - name: add argo-cd helm
+          shell: |
+                 helm repo add argo-cd https://argoproj.github.io/argo-helm
+          ignore_errors: true
+
+        - name: prepare argo-cd helm
+          shell: |
+                kubectl create ns argo-cd
+                helm repo add argo-cd https://argoproj.github.io/argo-helm
+                helm install argo-cd argo-cd/argo-cd -f values-argocd.yaml --include-crds --namespace argo-cd
+          ignore_errors: true
+
+        # - name: install argo-cd
+        #   shell: >
+        #         helm template argo-cd/argo-cd --namespace argo-cd --atomic --create-namespace 
+        #         --name-template argo-cd --include-crds -f $HOME/values/values-argocd.yaml | kubectl apply -n argo-cd -f -
+
+        # - name: Wait for argo crds
+        #   ansible.builtin.pause:
+        #     minutes: 1
+
+        # - name: create argocd app
+        #   shell: |
+        #     kubectl apply -f $HOME/values/argocd-apps.yaml
+
+

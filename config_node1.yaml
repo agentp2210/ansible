@@ -1,0 +1,43 @@
+- name: Install basic apps
+  hosts: node1
+  become: true
+  roles:
+      - basicSetup
+  tags:
+      - basic
+
+- name: Install Azure CLI
+  hosts: node1
+  become: true
+  roles:
+      - azcli
+
+- name: Install Terraform
+  hosts: node1
+  become: true
+  vars:
+    terragrunt_version: "v0.58.5"
+  roles:
+      - terraformInstall
+      - terragrunt
+  tags:
+      - terraform
+
+- name: Install kubectl and Helm
+  hosts: node1
+  become: true
+  roles:
+      - helmInstall
+      - kubectlInstall
+
+- name: Git checkout
+  hosts: node1
+  become: false
+  gather_facts: false
+  tasks:
+  - name: git clone
+    ansible.builtin.git:
+      repo: 'https://github.com/agentp2210/dotnet-AKS.git'
+      dest: /home/cloud_user/dotnet-AKS
+  tags:
+    - git

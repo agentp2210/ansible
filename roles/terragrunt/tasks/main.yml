@@ -1,0 +1,9 @@
+---
+# When /usr/local/bin/helm exists, it will not execute the task
+- name: Install Terragrunt if not exists
+  ansible.builtin.get_url:
+    url: https://github.com/gruntwork-io/terragrunt/releases/download/{{ terragrunt_version }}/terragrunt_linux_amd64
+    dest: /usr/local/bin/terragrunt
+    owner: cloud_user
+    group: cloud_user
+    mode: 0755

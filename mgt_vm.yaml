@@ -1,0 +1,16 @@
+---
+- name: Install required packages
+  hosts: ansibleVM
+  become: true
+  gather_facts: true
+  tasks:
+  - name: Install required packages
+    ansible.builtin.apt:
+      pkg:
+      - python3-pip
+      - tree
+      - unzip
+      - curl
+  - name: Install ansible
+    ansible.builtin.pip:
+      name: ansible

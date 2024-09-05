@@ -1,0 +1,93 @@
+- name: Configure all nodes
+  hosts: all
+  become: true
+  tasks:
+  - name: Configure SUDO with NOPASS
+    lineinfile:
+      state: present
+      path: /etc/sudoers
+      regexp: '^cloud_user ALL='
+      line: 'cloud_user ALL=(ALL:ALL) NOPASSWD: ALL'
+      validate: /usr/sbin/visudo -cf %s
+    tags:
+      - sudo
+
+  - name: Update apt-get repo and cache
+    apt: update_cache=yes force_apt_get=yes cache_valid_time=3600
+
+  - name: apt install required apps
+    ansible.builtin.apt:
+      name: "{{ item }}"
+      state: present
+    loop:
+      - python3-pip
+      - tree
+
+  - name: Copy SSh Key | copying shh key to remote host
+    authorized_key:
+      user: "cloud_user"
+      state: present
+      key: "{{ lookup('file', item) }}"
+    with_fileglob:
+    - id_dsa.pub
+
+- name: Configure node1
+  hosts: node1
+  become: true
+  tasks:
+  - name: set hostname for node1
+    ansible.builtin.hostname:
+      name: node1
+  - name: copy ssh keys to master node
+    copy:
+      src: "{{ item }}"
+      dest: /home/cloud_user/.ssh/
+      owner: cloud_user
+      mode: 700
+    with_fileglob:
+      - '/home/cloud_user/.ssh/id_rsa*'
+    tags:
+      - copy-keys
+
+
+  - name: Git checkout
+    become: false
+    ansible.builtin.git:
+      repo: 'https://github.com/kubernetes-sigs/kubespray.git'
+      dest: /home/cloud_user/kubespray
+      version: v2.24.0
+    tags:
+      - git
+
+  # - name: Install required packages for Kubespray
+  #   ansible.builtin.pip:
+  #     name: "{{ item }}"
+  #   loop:
+  #     - ansible==8.5.0
+  #     - cryptography==41.0.4
+  #     - jinja2==3.1.2
+  #     - jmespath==1.0.1
+  #     - MarkupSafe==2.1.3
+  #     - netaddr==0.9.0
+  #     - pbr==5.11.1
+  #     - ruamel.yaml==0.17.35
+  #     - ruamel.yaml.clib==0.2.8
+  #   tags:
+  #     - pip
+
+- name: Set a hostname for node2
+  hosts: node2
+  tasks:
+  - name: set hostname for node2
+    ansible.builtin.hostname:
+      name: node2
+    become: true
+
+- name: Set a hostname for node3
+  hosts: node3
+  tasks:
+  - name: set hostname for node3
+    ansible.builtin.hostname:
+      name: node3
+    become: true
+
